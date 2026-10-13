@@ -25,7 +25,7 @@ from uuid import uuid4
 import certifi
 import m3u8
 import requests
-from ffmpeg import FFmpeg
+from ffmpeg import FFmpeg, FFmpegError
 from mutagen import MutagenError
 from mutagen.flac import FLAC
 from mutagen.mp4 import MP4
@@ -45,6 +45,7 @@ from tidalapi.media import (
 )
 from urllib3.util.ssl_ import create_urllib3_context
 
+from waves import flac_verify
 from waves.config import ApiCallStopped, Settings, Tidal, api_waits_wake_for
 from waves.constants import (
     CHUNK_SIZE,
@@ -65,6 +66,7 @@ from waves.constants import (
     MetadataTargetUPC,
     QualityVideo,
 )
+from waves.flac_verify import seal_file
 from waves.helper.camelot import format_initial_key
 from waves.helper.exceptions import MediaMissing
 from waves.helper.path import (
@@ -134,6 +136,28 @@ COLLECTION_GAUGE = PoolGauge(3)
 # these is a login problem and must never be read as "this track is gone".
 _TIDAL_SUBSTATUS_AUTH_MIN: int = 11000
 _TIDAL_SUBSTATUS_AUTH_MAX: int = 11999
+
+# What libswresample prints when a build was made without the resampler an
+# aresample filter asks for (soxr is a build option). Only this error sends a
+# downsample to the built-in resampler; any other failure is the real one.
+_SOXR_MISSING_MARKER: str = "requested resampling engine is unavailable"
+
+# The ffmpeg binaries known to lack soxr, so after the first track of a run
+# every later one goes straight to the built-in resampler instead of paying a
+# failing spawn first. Keyed by the binary's path: a changed ffmpeg setting
+# is asked afresh. Tracks downsample on several worker threads at once.
+_SOXR_MISSING: set[str] = set()
+_SOXR_MISSING_LOCK = Lock()
+
+
+def _soxr_known_missing(ffmpeg: str) -> bool:
+    with _SOXR_MISSING_LOCK:
+        return ffmpeg in _SOXR_MISSING
+
+
+def _note_soxr_missing(ffmpeg: str) -> None:
+    with _SOXR_MISSING_LOCK:
+        _SOXR_MISSING.add(ffmpeg)
 
 
 def _tidal_refuses_asset(error: HTTPError) -> str | None:
@@ -2814,7 +2838,15 @@ class Download:
 
             # Extract FLAC from MP4 container using ffmpeg
             if isinstance(media, Track) and self.settings.data.extract_flac and do_flac_extract:
-                tmp_path_file = self._extract_flac(tmp_path_file)
+                tmp_path_file = self._extract_flac(tmp_path_file, event_stop)
+
+                # A stop during the seal leaves the header unsealed (MD5 unset,
+                # and a DASH copy's sample count 0). Such a file must not land:
+                # bail out like every other stop, and the temp dir goes with it.
+                event_abort: Event | None = getattr(self, "event_abort", None)
+
+                if (event_abort is not None and event_abort.is_set()) or (event_stop and event_stop.is_set()):
+                    return False, path_media_dst
 
             self._note_stage(media, cum["extract"])
 
@@ -4833,11 +4865,18 @@ class Download:
 
         return path_file_out
 
-    def _extract_flac(self, path_media_src: pathlib.Path) -> pathlib.Path:
+    def _extract_flac(self, path_media_src: pathlib.Path, event_stop: Event | None = None) -> pathlib.Path:
         """Extract FLAC audio from a media file using ffmpeg.
+
+        The copied-out file is sealed (see _flac_seal_streaminfo) unless the
+        downsample stage is about to re-encode it: ffmpeg's FLAC encoder writes
+        its own correct signature and sample count, so a seal there would be a
+        full decode thrown away.
 
         Args:
             path_media_src (pathlib.Path): Path to the source media file.
+            event_stop (Event | None, optional): The item's stop event; a stop
+                cuts the seal's decode short. Defaults to None.
 
         Returns:
             pathlib.Path: Path to the extracted FLAC file.
@@ -4860,8 +4899,99 @@ class Download:
         )
 
         ffmpeg.execute()
+        if self._downsample_will_reencode(path_media_out):
+            self.fn_logger.debug("FLAC seal skipped: the downsample stage re-encodes this file.")
+        else:
+            self._flac_seal_streaminfo(path_media_out, event_stop)
 
         return path_media_out
+
+    def _downsample_will_reencode(self, path_file: pathlib.Path) -> bool:
+        """Whether the downsample stage will re-encode this FLAC (rate or depth drops).
+
+        False when downsampling is off, already at or below the target, or the
+        header cannot be read (the seal then runs, which is always safe).
+        """
+        if not getattr(self.settings.data, "downsample_enabled", False):
+            return False
+        try:
+            src_rate, src_depth, out_rate, out_depth = self._downsample_formats(path_file)
+        except Exception:
+            return False
+        return (out_rate, out_depth) != (src_rate, src_depth)
+
+    def _downsample_formats(self, path_file: pathlib.Path) -> tuple[int, int, int, int]:
+        """The source rate and depth and what the downsample target makes of them.
+
+        Each dimension is reduced independently and never raised.
+
+        Returns:
+            tuple[int, int, int, int]: (source rate, source depth, output rate, output depth).
+        """
+        target = DownsampleTarget(self.settings.data.downsample_target)
+        info = FLAC(path_file).info
+        src_rate = info.sample_rate
+        src_depth = info.bits_per_sample
+
+        return src_rate, src_depth, min(src_rate, target.sample_rate), min(src_depth, target.bit_depth)
+
+    def _flac_seal_streaminfo(self, path_file: pathlib.Path, event_stop: Event | None = None) -> None:
+        """Write the real audio MD5 and sample count into a copied-out FLAC's STREAMINFO.
+
+        TIDAL packages FLAC inside fragmented MP4. The ``-acodec copy``
+        extraction keeps the audio frames bit for bit, but ffmpeg's FLAC muxer
+        writes the STREAMINFO from the ``dfLa`` box verbatim, so the file
+        carries whatever signature TIDAL's packager put there. The current
+        catalog ships a correct one (checked live across both lossless tiers),
+        but a header without a signature (all zeros, as older packaging and
+        upstream reports had it) leaves ``flac -t`` and every checker built on
+        libFLAC reporting the file as unverifiable, and strict players treat
+        it as corrupt even though the audio is intact.
+
+        The work is :func:`waves.flac_verify.seal_file`, shared with the
+        Settings tool that checks an existing library: decode once through
+        ffmpeg (about a second for a long hi-res track), hash the PCM the way
+        libFLAC defines it, fill in an unset signature and a wrong sample
+        count in place (34 header bytes, nothing else), leave a matching one
+        alone, and report a set signature that does not match rather than
+        paper over it. A failure of this step only logs: the file is still
+        the same playable file it was.
+
+        A stop (the item's own, or the whole run's abort) cuts the decode short
+        and leaves the header as delivered, quietly: stopping is not a fault.
+
+        Args:
+            path_file (pathlib.Path): The extracted ``.flac`` file.
+            event_stop (Event | None, optional): The item's stop event. Defaults to None.
+        """
+        event_abort: Event | None = getattr(self, "event_abort", None)
+
+        def should_continue() -> bool:
+            return not ((event_abort is not None and event_abort.is_set()) or (event_stop and event_stop.is_set()))
+
+        try:
+            row = seal_file(
+                path_file,
+                str(self.settings.data.path_binary_ffmpeg),
+                fill_sample_count=True,
+                should_continue=should_continue,
+            )
+        except Exception:
+            self.fn_logger.exception(f"FLAC STREAMINFO seal failed; file kept as extracted: {log_content(path_file)}")
+            return
+        if row.status == flac_verify.CANCELLED:
+            self.fn_logger.debug("FLAC STREAMINFO seal stopped with the download; header left as delivered.")
+        elif row.status == flac_verify.SEALED:
+            self.fn_logger.info(f"Sealed FLAC STREAMINFO ({row.detail}): {log_content(path_file)}")
+        elif row.status == flac_verify.MISMATCH:
+            self.fn_logger.warning(
+                f"FLAC audio does not match its MD5 signature; header kept as delivered: {log_content(path_file)}"
+            )
+        elif row.status != flac_verify.OK:
+            self.fn_logger.warning(
+                f"FLAC verify {flac_verify.STATUS_LABELS.get(row.status, row.status)}; "
+                f"header left as delivered: {log_content(path_file)}"
+            )
 
     def _faststart_remux(self, path_file: pathlib.Path, container_ext: str) -> pathlib.Path:
         """Rebuild an MP4/M4A container so its moov/mvhd carries the real duration.
@@ -4928,12 +5058,7 @@ class Download:
         target_rate = target.sample_rate
         target_depth = target.bit_depth
 
-        info = FLAC(path_file).info
-        src_rate = info.sample_rate
-        src_depth = info.bits_per_sample
-
-        out_rate = min(src_rate, target_rate)
-        out_depth = min(src_depth, target_depth)
+        src_rate, src_depth, out_rate, out_depth = self._downsample_formats(path_file)
 
         if out_rate == src_rate and out_depth == src_depth:
             self.fn_logger.info(
@@ -4958,16 +5083,25 @@ class Download:
         # mostly equivalent to the redacted sox command but no clipping protection
         # `sox -S input.flac -R -G -b 16 output.flac rate -v -L 48000 dither`
         # i dont really know much about dithering methods but i trust those guys
-        filter_parts = ["resampler=soxr", "precision=33"]
+        filter_parts = []
         if rate_changing:
             filter_parts.append(f"osr={out_rate}")
         if depth_changing:
             filter_parts.append(f"osf={sample_fmt}")
             filter_parts.append("dither_method=triangular")
-        af = "aresample=" + ":".join(filter_parts)
+        # soxr is asked for first. It is a build option, and the builds Waves
+        # ships with today (martin-riedl 9.x on macOS and Linux, Homebrew's 9.x)
+        # leave it out, where ffmpeg then fails the whole conversion with
+        # "Error reinitializing filters" and the track failed. Only that
+        # failure moves on to ffmpeg's own resampler, which every build
+        # carries, and a binary found without soxr goes straight there after.
+        path_ffmpeg = str(self.settings.data.path_binary_ffmpeg)
+        filter_swr = "aresample=" + ":".join(["resampler=swr", *filter_parts])
+        filters = [filter_swr]
+        if not _soxr_known_missing(path_ffmpeg):
+            filters.insert(0, "aresample=" + ":".join(["resampler=soxr", "precision=33", *filter_parts]))
 
         output_kwargs: dict = {
-            "af": af,
             "acodec": "flac",
             "map_metadata": "0",
             "loglevel": "error",
@@ -4980,15 +5114,32 @@ class Download:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_path_dir:
             path_out = pathlib.Path(tmp_path_dir) / path_file.name
 
-            ffmpeg = (
-                FFmpeg(executable=self.settings.data.path_binary_ffmpeg)
-                .option("y")
-                .option("hide_banner")
-                .option("nostdin")
-                .input(url=path_file)
-                .output(url=path_out, **output_kwargs)
-            )
-            ffmpeg.execute()
+            for af in filters:
+                ffmpeg = (
+                    FFmpeg(executable=self.settings.data.path_binary_ffmpeg)
+                    .option("y")
+                    .option("hide_banner")
+                    .option("nostdin")
+                    .input(url=path_file)
+                    .output(url=path_out, af=af, **output_kwargs)
+                )
+                # The error ffmpeg raises carries only its last stderr line
+                # ("Nothing was written..."), so the cause is read off the
+                # whole stream.
+                stderr_lines: list[str] = []
+                ffmpeg.on("stderr", stderr_lines.append)
+                try:
+                    ffmpeg.execute()
+                except FFmpegError:
+                    soxr_missing = af != filter_swr and any(
+                        _SOXR_MISSING_MARKER in line.lower() for line in stderr_lines
+                    )
+                    if not soxr_missing:
+                        raise
+                    _note_soxr_missing(path_ffmpeg)
+                    self.fn_logger.info("Downsample: this ffmpeg has no soxr resampler, using its built-in one.")
+                    continue
+                break
 
             if not self._move_file(path_out, path_file, overwrite=True):
                 self.fn_logger.error(f"Unable to replace downsampled file: {log_content(path_file)}")
