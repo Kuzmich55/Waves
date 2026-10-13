@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metainfo, shipped inside the AppImage at
+  usr/share/metainfo/dev.getwaves.Waves.metainfo.xml (build_appimage.sh puts
+  it there, stamping @VERSION@ and @DATE@ from pyproject.toml at build time).
+
+  Catalogs read this for the description and, above all, the screenshots:
+  AppImageHub's test VM has no TIDAL account, so left to itself its capture
+  shows the first-run sign-in screen; the screenshots below are what its
+  catalog page shows instead. The images live on the website, full size, so
+  a refreshed shot reaches the catalog without an app release.
+-->
+<component type="desktop-application">
+  <id>dev.getwaves.Waves</id>
+  <name>Waves</name>
+  <summary>Save music from your own TIDAL account for offline listening</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <developer id="dev.getwaves">
+    <name>iamprivacy</name>
+  </developer>
+  <description>
+    <p>
+      A native desktop app for saving music from your own TIDAL account for
+      offline listening: search-first, art-forward, and built for people
+      who'd rather click than type. Browse TIDAL's shelves, search across
+      artists, albums, tracks and videos, and save a track, an album, a
+      playlist or an artist's whole discography in one click, up to hi-res
+      lossless and Dolby Atmos.
+    </p>
+    <p>
+      A paid TIDAL plan is required. Waves saves from your own account, for
+      your personal, non-commercial use, and can only save what your account
+      can play. On first run it opens TIDAL's own login page in your browser
+      and never sees your password. Not affiliated with, endorsed by, or
+      supported by TIDAL.
+    </p>
+  </description>
+  <launchable type="desktop-id">waves.desktop</launchable>
+  <url type="homepage">https://getwaves.dev</url>
+  <url type="bugtracker">https://github.com/iamprivacy/Waves/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Browse, the home screen: TIDAL's shelves, new tracks and new albums</caption>
+      <image>https://getwaves.dev/assets/appstream/browse.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Search across artists, albums, tracks and videos, each release wearing its best quality</caption>
+      <image>https://getwaves.dev/assets/appstream/search.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>An artist page: biography, top tracks and the full discography</caption>
+      <image>https://getwaves.dev/assets/appstream/artist.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The download queue saving albums track by track</caption>
+      <image>https://getwaves.dev/assets/appstream/queue.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Search results remember what is already on your drive, album by album</caption>
+      <image>https://getwaves.dev/assets/appstream/library.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@">
+      <url>https://github.com/iamprivacy/Waves/releases/tag/v@VERSION@</url>
+    </release>
+  </releases>
+</component>
