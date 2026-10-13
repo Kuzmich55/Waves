@@ -115,6 +115,9 @@ class _Stub:
     def _job_atmos(self, qid):
         return False
 
+    def _job_skip_existing(self, qid) -> bool:
+        return True
+
     def _gate_reachability(self, retry, media_id) -> bool:
         return True
 

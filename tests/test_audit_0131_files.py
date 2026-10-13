@@ -92,9 +92,11 @@ def test_a_broken_settings_file_that_cannot_be_set_aside_is_left_as_it_is(tmp_pa
 @pytest.mark.skipif(not RELEASE_SH.exists(), reason="release.sh is not part of this checkout")
 def test_a_marker_pattern_git_grep_cannot_compile_refuses_the_release(request):
     """#28: BSD grep accepts 'a**' but git grep exits 128 on it, and '|| true'
-    read that as a clean tree, so the release went out unscanned."""
+    read that as a clean tree, so the release went out unscanned. The test
+    pattern is 'a{2,1}' (an interval running backwards): git grep rejects it on
+    macOS and Linux alike, where Linux's git grep accepts 'a**'."""
     private = request.getfixturevalue("sandbox")
-    _write_hook(private, "a**")
+    _write_hook(private, "a{2,1}")
     proc = _dry_run(private)
     assert proc.returncode != 0, f"an unscanned tree was released:\n{proc.stdout}"
     assert "content scan could not run" in proc.stderr, proc.stderr

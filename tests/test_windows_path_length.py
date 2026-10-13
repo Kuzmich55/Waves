@@ -8,7 +8,10 @@ and the download failed at the move after it had already finished.
 The numbers differ per platform (260 on Windows, 1024 on macOS and Linux) but
 the code is one path, so the repro is built at the running platform's own limit
 rather than by pretending to be another one: forcing a platform also forces its
-separators, which says nothing about the rule under test.
+separators, which says nothing about the rule under test. The limit is the
+app's own cap (PATH_LENGTH_MAX), which is stricter than pathvalidate's on Linux
+(4096 there): measuring pathvalidate's alone built a "valid" folder that was
+already over the app's cap, so the folder rightly shrank and the test failed.
 """
 
 import pathlib
@@ -17,10 +20,12 @@ import pytest
 from pathvalidate import sanitize_filepath
 from pathvalidate.error import ValidationError
 
-from waves.helper.path import path_file_sanitize
+from waves.helper.path import PATH_LENGTH_MAX, path_file_sanitize
 
 
 def _is_valid(path_file: pathlib.Path) -> bool:
+    if len(str(path_file)) > PATH_LENGTH_MAX:
+        return False
     try:
         sanitize_filepath(path_file, validate_after_sanitize=True, platform="auto")
     except ValidationError:

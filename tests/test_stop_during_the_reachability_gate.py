@@ -106,6 +106,9 @@ class _Stub:
     def _job_atmos(self, qid):
         return False
 
+    def _job_skip_existing(self, qid) -> bool:
+        return True
+
     def _build_download(self, signals, **kwargs):
         return self.dl
 

@@ -64,6 +64,13 @@ def _run_scenario() -> int:
         return _EXIT_NO_QT
 
     app = QGuiApplication.instance() or QGuiApplication([])
+    if sys.platform != "darwin":
+        # Main.qml's Settings blocks need the names app.py sets, or Linux's
+        # QSettings refuses to start and warns. Here it writes under the
+        # sandboxed XDG_CONFIG_HOME; on macOS it would reach the real
+        # Preferences folder, and there the bundle id already serves.
+        app.setApplicationName("Waves")
+        app.setOrganizationName("Waves")
     try:
         from waves.waves_ui.app import _load_mono
         from waves.waves_ui.backend import WavesBridge
@@ -219,6 +226,11 @@ def _run_scenario() -> int:
     bridge._logged_in = True
     bridge.loggedInChanged.emit()
     settle(100)
+    # A fresh config dir is a first run, and signing in raises the first-run
+    # gates over the whole window, which take every hover. Hidden in memory
+    # only: persisting setup as done would write the real macOS preferences.
+    q("termsGate.visible = false")
+    q("ffmpegGate.visible = false")
     q("root.openBrowse()")
     if not pump(lambda: q("browsePageKey") == "" and q("browseSections.length") == 1 and not q("browseBuilding")):
         print(

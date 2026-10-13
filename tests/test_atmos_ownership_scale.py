@@ -95,6 +95,7 @@ def _gate(store, *, target, atmos_on):
     dl = _TrackedDownload.__new__(_TrackedDownload)
     dl._ownership_of = store.ownership_of
     dl._target_rank = quality_rank(target)
+    dl._skip_existing_base = True  # "Skip existing" on, its default: the gate is armed
     dl.settings = SimpleNamespace(data=SimpleNamespace(download_dolby_atmos=atmos_on))
     return dl
 
@@ -350,9 +351,21 @@ def _predictor(store, *, quality, atmos_on):
     b._merge_plans = {}
     b._objs = {"album": {}}
     b._queue_index = {}
-    b.settings = SimpleNamespace(data=SimpleNamespace(quality_audio=quality, download_dolby_atmos=atmos_on))
+    # The row below is handed to _predict_skips directly and never indexed, so
+    # its "Skip existing" pin is read from the setting: on, its default, and
+    # the ownership gate is armed.
+    b.settings = SimpleNamespace(
+        data=SimpleNamespace(quality_audio=quality, download_dolby_atmos=atmos_on, skip_existing=True)
+    )
     b._library_claim_media = lambda media, album=None: False
-    for name in ("_predict_skips", "_target_quality_rank", "_job_quality", "_job_library_skip", "_queue_item"):
+    for name in (
+        "_predict_skips",
+        "_target_quality_rank",
+        "_job_quality",
+        "_job_library_skip",
+        "_job_skip_existing",
+        "_queue_item",
+    ):
         setattr(b, name, getattr(WavesBridge, name).__get__(b, WavesBridge))
     return b
 

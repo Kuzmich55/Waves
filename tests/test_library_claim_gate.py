@@ -44,6 +44,7 @@ def _gate(*, claim, ownership_of=None, target_rank=3, identity=None):
     dl._target_rank = target_rank
     dl._library_claim = claim
     dl._force_redownload = False
+    dl._skip_existing_base = True  # "Skip existing" on, its default: the gate is armed
     # The ownership half of the gate asks whether this job would fetch Dolby
     # Atmos for the track; these tests are about the claim half, so it is off.
     dl.settings = types.SimpleNamespace(data=types.SimpleNamespace(download_dolby_atmos=False))

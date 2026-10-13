@@ -71,6 +71,7 @@ def _bridge(setting=Quality.high_lossless):
     b._queue_lock = Lock()
     b._emit_queue = lambda: None
     b._library_bulk_skip_on = lambda: False
+    b._skip_existing_on = lambda: True
     b._logged_in = True
     b._download_gate = lambda: "ok"
     b._ffmpeg_gate_holds = lambda *a, **k: False

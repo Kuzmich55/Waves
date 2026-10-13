@@ -271,6 +271,9 @@ class _QueueCarcass:
     def _library_bulk_skip_on(self) -> bool:
         return False
 
+    def _skip_existing_on(self) -> bool:
+        return True
+
 
 def test_a_queue_row_is_born_with_a_reason_field():
     """The drawer's model fixes its roles from the first row it is handed, so

@@ -258,6 +258,7 @@ def test_the_row_records_the_setting_it_was_queued_at():
     # The other value a row pins at birth, tested on its own in
     # tests/test_queue_row_pins_the_library_skip.py.
     stub._library_bulk_skip_on = lambda: True
+    stub._skip_existing_on = lambda: True
     qid = backend.WavesBridge._enqueue.__get__(stub, type(stub))("Album", "album")
     assert stub._queue[0]["askQuality"] == Quality.hi_res_lossless.value
     assert stub._queue[0]["qid"] == qid

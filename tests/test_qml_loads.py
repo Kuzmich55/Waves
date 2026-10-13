@@ -76,6 +76,13 @@ def _run_scenario() -> int:
     patch_offline()
 
     app = QGuiApplication.instance() or QGuiApplication([])
+    if sys.platform != "darwin":
+        # Main.qml's Settings blocks need the names app.py sets, or Linux's
+        # QSettings refuses to start and warns. Here it writes under the
+        # sandboxed XDG_CONFIG_HOME; on macOS it would reach the real
+        # Preferences folder, and there the bundle id already serves.
+        app.setApplicationName("Waves")
+        app.setOrganizationName("Waves")
     try:
         from waves.waves_ui.backend import WavesBridge
     except Exception as exc:

@@ -128,6 +128,9 @@ class _Stub:
     def _library_bulk_skip_on(self):
         return self._claim_on
 
+    def _skip_existing_on(self):
+        return True
+
     def _library_claim_media(self, media, album=None):
         return str(media.id) in self._claimed
 
@@ -330,7 +333,7 @@ def test_logout_drops_a_pending_count():
 
 
 def test_the_confirm_dialog_names_tracks_and_calls_the_slot():
-    gate = re.search(r"id: catDlGate.*?label: \"Cancel\"", QML, re.S)
+    gate = re.search(r"id: catDlGate.*?label: \"CANCEL\"", QML, re.S)
     assert gate
     body = gate.group(0)
     assert '" track?" : " tracks?"' in body

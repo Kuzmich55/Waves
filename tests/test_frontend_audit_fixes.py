@@ -176,7 +176,10 @@ def test_small_polish_pins():
     # a disabled sort control shows no pointing hand
     assert "cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor" in MAIN
     # only a FIRST terms acceptance marks the update prompt fresh
-    assert "if (!legalSettings.termsAccepted) setupSettings.updatePromptFresh = true" in MAIN
+    assert (
+        "if (!legalSettings.termsAccepted) {\n                            setupSettings.updatePromptFresh = true"
+        in MAIN
+    )
     # the folder list disarms a pending restore on a drag like every other list
     lst = _block(MAIN, "id: libFolderList", "LibList {")
     assert "onMovementStarted: pendingY = -1" in lst

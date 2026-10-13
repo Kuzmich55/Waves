@@ -66,6 +66,7 @@ class _Stub:
     _queue_item = WavesBridge._queue_item
     _set_queue_status = WavesBridge._set_queue_status
     _job_library_skip = WavesBridge._job_library_skip
+    _job_skip_existing = WavesBridge._job_skip_existing
     _job_quality = WavesBridge._job_quality
     _job_atmos = WavesBridge._job_atmos
     _queued_quality_value = WavesBridge._queued_quality_value
@@ -121,6 +122,9 @@ class _Stub:
         """The LIVE setting: the thing a queued row may consult exactly once,
         when it is created."""
         return self._pref()
+
+    def _skip_existing_on(self) -> bool:
+        return True
 
     def _library_claim_media(self, media, album=None):
         """The scan's answer for one song, standing in for the index. Always a

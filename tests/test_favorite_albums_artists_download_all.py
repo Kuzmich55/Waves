@@ -166,6 +166,9 @@ class _Stub:
     def _library_bulk_skip_on(self):
         return bool(self._claimed)
 
+    def _skip_existing_on(self):
+        return True
+
     def _library_claims_album(self, album):
         return str(album.id) in self._claimed
 
@@ -351,6 +354,9 @@ class _ArtistScanStub:
     def _library_bulk_skip_on(self):
         return False
 
+    def _skip_existing_on(self):
+        return True
+
 
 @pytest.mark.parametrize(("artist", "verdict"), [(SimpleNamespace(id="r0"), "done"), (None, "failed")])
 def test_a_discography_that_queues_nothing_still_settles_its_artist(artist, verdict):
@@ -412,7 +418,7 @@ def test_the_qml_is_wired(cat, btn, gid, resolve, slot, kind):
     block = re.search(rf'Item \{{\s*visible: root\.libraryCategory === "{cat}".*?objectName: "{btn}"', QML, re.S)
     assert block, f"the {cat} DOWNLOAD ALL button must live inside the {cat}-only Item"
     assert f'mediaId: "{gid}"' in QML and f"waves.{resolve}()" in QML
-    gate = re.search(r"id: catDlGate.*?label: \"Cancel\"", QML, re.S)
+    gate = re.search(r"id: catDlGate.*?label: \"CANCEL\"", QML, re.S)
     assert gate and f'p.kind === "{kind}"' in gate.group(0) and f"waves.{slot}()" in gate.group(0)
     logout = re.search(r"onLoggedInChanged.*?root\.catDlPrompt = null\s*\n(.*?)\n\s*//", QML, re.S)
     assert logout and f"{kind}Pending = false" in logout.group(1)

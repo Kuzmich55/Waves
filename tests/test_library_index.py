@@ -1367,6 +1367,8 @@ def test_a_respelled_root_keeps_its_walk_warm_and_never_doubles(tmp_path):
     # missed every known row (a full cold re-read) and, until the prune caught
     # up, iter_albums served BOTH spellings of every album, doubling the
     # artist rollup for up to an hour. _begin_scan now rewrites the prefix.
+    if not os.path.exists(str(tmp_path).upper()) or not os.path.exists(str(tmp_path).lower()):
+        pytest.skip("a respelled root is only the same folder on a case-insensitive file system")
     lib = _mk(tmp_path, "lib", [])
     d = _mk(tmp_path, "lib/A/Alb", ["1.flac"])
     tags = {d: {"album": "Alb", "artist": "A", "date": "2000"}}

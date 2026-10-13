@@ -165,6 +165,9 @@ class _Stub:
     def _library_bulk_skip_on(self):
         return self._bulk_skip
 
+    def _skip_existing_on(self):
+        return True
+
     def _library_claims_album(self, album):
         return album.id in self._claimed
 

@@ -69,6 +69,7 @@ def _delta_stub():
     # none here, so every ask is the setting's.
     _bind(stub, "_ask_quality_for", "_ask_atmos_for", "_quality_override_key", "_row_ask")
     stub._library_bulk_skip_on = lambda: True
+    stub._skip_existing_on = lambda: True
     stub._QUEUE_SETTLED = WavesBridge._QUEUE_SETTLED
     stub._QUEUE_HISTORY_MAX = WavesBridge._QUEUE_HISTORY_MAX
     arm_queue(stub)
@@ -253,6 +254,7 @@ def _job_stub(pool=None):
     stub._job_quality = lambda qid: None
     stub._job_atmos = lambda qid: False
     stub._job_library_skip = lambda qid: False
+    stub._job_skip_existing = lambda qid: True
     stub._gate_reachability = lambda retry, media_id: True
     stub._set_queue_progress = lambda qid, pct: None
     stub._set_status = lambda msg: None

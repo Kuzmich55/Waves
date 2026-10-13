@@ -187,6 +187,30 @@ def test_factory_reset_wipes_waves_files_and_keeps_install_channel(tmp_path, mon
     assert _FakeQSettings.cleared, "the QML setup flags are cleared too"
 
 
+def test_factory_reset_stops_a_running_flac_check_before_the_wipe(tmp_path, monkeypatch):
+    """A check still walking the library would otherwise finish after the
+    wipe and write its CSV report (every file it saw) back into the folder
+    the reset just emptied. The reset cancels it and supersedes its
+    generation, which drops the outcome (see bridge_flac._flac_check_finish)."""
+    import threading
+
+    base = tmp_path / "cfg"
+    base.mkdir()
+    monkeypatch.setattr(backend_mod, "path_config_base", lambda: str(base))
+    monkeypatch.setattr(backend_mod.diagnostics, "detach_disk_log", lambda: None)
+    monkeypatch.setattr(backend_mod, "QtCore", _FakeQtCore)
+    stub = _Stub()
+    stub._factory_reset = False
+    stub._ownership = _FakeOwnership()
+    stub._flac_check_gen = 3
+    stub._flac_check_cancel = threading.Event()
+
+    _bind(stub, "factoryReset")()
+
+    assert stub._flac_check_cancel.is_set()
+    assert stub._flac_check_gen == 4
+
+
 def test_factory_reset_takes_everything_a_self_update_left_behind(tmp_path, monkeypatch):
     """The updates folder as a real self-update leaves it.
 
@@ -244,6 +268,36 @@ def test_factory_reset_patterns_still_cannot_touch_a_foreign_file(tmp_path, monk
     assert (updates / "my_apply_update_7.bat").read_text() == "precious"
     assert (binf / "notffmpeg.Qm7x2d.new").read_text() == "precious"
     assert (binf / "tmpq8s7d1.zip").read_text() == "precious"
+
+
+def test_factory_reset_takes_every_flac_report_and_nothing_else_there(tmp_path, monkeypatch):
+    """The FLAC check's reports, a second one in the same second included
+    (named with a counter), go with the reset; any other name in the
+    reports folder is the user's and stays."""
+    from waves import flac_verify
+
+    base = tmp_path / "cfg"
+    reports = base / backend_mod.REPORTS_DIR
+    reports.mkdir(parents=True)
+    ours = [flac_verify.report_name(kind, 1_700_000_000, n) for kind in ("scan", "fix") for n in (1, 2, 10, 999)]
+    for name in ours:
+        (reports / name).write_text("ours")
+    foreign = [
+        "flac-check-scan-20260101-010101-1.csv",
+        "flac-check-scan-20260101-010101-0.csv",
+        "flac-check-scan-20260101-010101-1000.csv",
+        "flac-check-scan-20260101-010101-2.csv.bak",
+        "flac-check-scan-20260101-010101-copy.csv",
+        "my-report.csv",
+    ]
+    for name in foreign:
+        (reports / name).write_text("precious")
+
+    _run_factory_reset(base, monkeypatch)
+
+    for name in ours:
+        assert not (reports / name).exists(), name
+    assert sorted(os.listdir(reports)) == sorted(foreign)
 
 
 def test_factory_reset_cannot_touch_foreign_files(tmp_path, monkeypatch):

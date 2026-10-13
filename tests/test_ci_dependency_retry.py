@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
+import pytest
+
+# PyYAML is not a declared dependency: a bare environment skips the guard
+# instead of failing to collect the whole suite.
+yaml = pytest.importorskip("yaml")
 
 ACTION = Path(__file__).resolve().parent.parent / ".github/actions/setup-poetry-env/action.yml"
 

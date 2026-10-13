@@ -168,6 +168,9 @@ class _DiscoStub:
         # own filtering is covered by test_library_bridge.py.
         return False
 
+    def _skip_existing_on(self):
+        return True
+
     def _remember(self, bucket, key, obj):
         self.remembered.append((bucket, key))
 
@@ -319,6 +322,7 @@ def test_discography_leaves_out_claimed_albums():
     owned = SimpleNamespace(id="al2")
     stub._artist_releases = lambda a: ([kept, owned], [], True)
     stub._library_bulk_skip_on = lambda: True
+    stub._skip_existing_on = lambda: True
     stub._library_claims_album = lambda a: a is owned
     stub.downloadArtist("art1")
     assert stub._albumsQueued.emits == [(0, ["al1"])]
@@ -332,6 +336,7 @@ def test_an_all_claimed_discography_says_so():
     artist = _Artist([])
     stub = _DiscoStub(artist, video_download=False)
     stub._library_bulk_skip_on = lambda: True
+    stub._skip_existing_on = lambda: True
     stub._library_claims_album = lambda a: True
     stub.downloadArtist("art1")
     assert stub._albumsQueued.emits == []
