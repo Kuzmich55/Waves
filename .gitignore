@@ -187,4 +187,8 @@ packaging/winget/
 # a ref, so untracked files were already safe from the public repo; this closes
 # the other door, a stray `git add -A` sweeping one into a commit.
 /*audit*.md
-/notes/*audit*.md
+
+# Private notes: nothing new in notes/ is ever swept into a commit. The notes
+# already tracked stay tracked (ignoring never untracks a file); a new one that
+# belongs in the private history is added on purpose with `git add -f`.
+/notes/*
