@@ -674,6 +674,12 @@ ApplicationWindow {
     // Advanced-settings reset confirmations. Both actions are destructive, so
     // nothing happens until the user confirms in these dialogs.
     property bool confirmSettingsReset: false
+    // The FLAC check's fix (Advanced settings): confirmed with the count of
+    // files it will write a signature into, before the backend is asked.
+    property bool confirmFlacFix: false
+    property int flacFixCount: 0
+    property string flacFixWhere: ""   // the folders the fix writes in, shown in the gate
+    property bool flacFixResume: false // the gate asks to resume a fix that stopped, not to start one
     property bool confirmFactoryReset: false
     // The set folder failed the reachability probe (NAS asleep, stale mount);
     // the download is held backend-side until Try again / a new folder.
@@ -3077,6 +3083,12 @@ ApplicationWindow {
         navPush(); markNav("settings")
         settingsOpen = true; artistOpen = false; libraryOpen = false; browseOpen = false
         Qt.callLater(function() { settingsPage.jumpToCard("ffmpeg") })
+    }
+    // Deep-link to the FLAC signatures card (from the FLAC notice).
+    function openFlacSetting() {
+        navPush(); markNav("settings")
+        settingsOpen = true; artistOpen = false; libraryOpen = false; browseOpen = false
+        Qt.callLater(function() { settingsPage.jumpToCard("flac") })
     }
     // Browse: open the tab (fetching the landing page once per session) and
     // drill into an editorial page. Target-first flag order, same as above.
@@ -8087,43 +8099,18 @@ ApplicationWindow {
         }
     }
 
-    // Tap-card action: the pop-ups' shared primary-action shape. A full-width
-    // tinted card with the label left and an arrow right, so actions read the
-    // same as the option cards (the card IS the button). danger tints it red.
-    component GateAction: Rectangle {
-        id: ga
-        property string label: ""
-        property bool danger: false
-        property bool neutral: false      // grey secondary style (e.g. "keep" beside a green CTA)
-        property bool showArrow: true     // hide when two GateActions sit side by side
-        signal clicked()
-        readonly property color fg: neutral ? root.textHi : (danger ? root.red : root.accent)
-        readonly property color bg: neutral ? root.surface3 : (danger ? root.redCont : root.accentCont)
-        readonly property color bd: neutral ? root.outline : (danger ? Qt.alpha(root.red, 0.55) : root.accentDim)
-        Layout.fillWidth: true; implicitHeight: 46; radius: 10
-        color: gaMa.containsMouse && ga.enabled ? Qt.lighter(bg, 1.35) : bg
-        border.width: 1; border.color: bd
-        RowLayout {
-            anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 14; spacing: 10
-            Text { textFormat: Text.PlainText; text: ga.label; color: ga.fg; font.pixelSize: 13; font.bold: true; font.family: root.uiFont; Layout.fillWidth: true; elide: Text.ElideRight; horizontalAlignment: ga.showArrow ? Text.AlignLeft : Text.AlignHCenter }
-            Ico { visible: ga.showArrow; name: "arrow-right"; color: ga.fg; size: 15 }
-        }
-        MouseArea { id: gaMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: ga.clicked() }
-    }
-
     // Console-spec button: the app's ordinary hugging button (label + btnPadH*2
     // wide, btnRad corners, uiFont 13 bold UPPERCASE) as a reusable component.
-    // For dialogs it is the pair shape: a SINGLE stacked CTA stays a full-width
-    // GateAction, but two actions side by side hug their labels in a centred
-    // row instead of stretching half-empty across the card. primary = lit cell
-    // (accentCont/accentDim, hover lightens like GateAction), secondary =
+    // Every dialog button is one: a single action or a pair, they hug their
+    // labels in a centred row and never stretch half-empty across the card.
+    // primary = lit cell (accentCont/accentDim, hover lightens), secondary =
     // outlined with the label warming textLo -> textHi on hover.
     component SpecBtn: Rectangle {
         id: sb
         property string label: ""
         property bool primary: false
-        // GateAction's red recipe (red on redCont, translucent red border) on
-        // the hugging shape, for the destructive half of a button pair.
+        // The red recipe (red on redCont, translucent red border), for the
+        // destructive half of a button pair.
         property bool danger: false
         // The same recipe in the palette's gold, for an action that interrupts
         // without discarding anything (pausing the queue). Not danger: nothing
@@ -15694,6 +15681,8 @@ ApplicationWindow {
             onClosed: root.settingsOpen = false
             onResetSettingsRequested: root.confirmSettingsReset = true
             onFactoryResetRequested: root.confirmFactoryReset = true
+            onFlacFixRequested: function(count, where) { root.flacFixResume = false; root.flacFixCount = count; root.flacFixWhere = where; root.confirmFlacFix = true }
+            onFlacResumeRequested: function(where) { root.flacFixResume = true; root.flacFixWhere = where; root.confirmFlacFix = true }
         }
 
         // ---- Library page ----------------------------------------------
@@ -17849,7 +17838,8 @@ ApplicationWindow {
                         color: root.textLo; font.pixelSize: 13
                     }
                 }
-                GateAction {
+                SpecBtn {
+                    Layout.alignment: Qt.AlignHCenter; primary: true
                     label: loginPanel.urlOpened ? "REOPEN BROWSER LOGIN" : "OPEN BROWSER LOGIN"
                     onClicked: waves.beginLogin()
                 }
@@ -17894,7 +17884,8 @@ ApplicationWindow {
                         }
                     }
                 }
-                GateAction {
+                SpecBtn {
+                    Layout.alignment: Qt.AlignHCenter; primary: true
                     visible: loginPanel.urlOpened
                     label: "COMPLETE SIGN-IN"
                     onClicked: waves.completeLogin(redirectField.text)
@@ -17932,6 +17923,11 @@ ApplicationWindow {
         // True when this install went through the first-run terms gate, so
         // the opt-in prompt keeps its fresh-setup wording across launches.
         property bool updatePromptFresh: false
+        // FLAC signature notice (flacNoticeGate): shown once per install,
+        // ever. Keyed to the notice, not the version, so a later update never
+        // brings it back. A fresh install marks it seen at the terms gate:
+        // only files saved by an earlier version can need the fix.
+        property bool flacNoticeSeen: false
         // Exit warning (exitGate): "Don't warn me again" mutes the
         // downloads-still-running close prompt permanently.
         property bool exitWarnMuted: false
@@ -17964,7 +17960,7 @@ ApplicationWindow {
                     color: root.textLo; font.pixelSize: 13; lineHeight: 1.3
                     text: "Waves doesn't have a folder to save downloads to yet. Pick where your music should go, then start the download again."
                 }
-                GateAction { label: "Open download settings"; onClicked: { root.folderGateBlocking = false; root.openDownloadSetting() } }
+                SpecBtn { Layout.alignment: Qt.AlignHCenter; primary: true; label: "OPEN DOWNLOAD SETTINGS"; onClicked: { root.folderGateBlocking = false; root.openDownloadSetting() } }
                 Text {
                     Layout.alignment: Qt.AlignHCenter
                     textFormat: Text.PlainText; text: "Not now"; color: root.textLo; font.pixelSize: 13
@@ -17986,7 +17982,9 @@ ApplicationWindow {
         color: "#cc06070e"
         MouseArea { anchors.fill: parent; onClicked: { root.folderNudge = false; waves.dismissDownloadFolderNudge() } }   // click-away cancels (no download)
         Rectangle {
-            anchors.centerIn: parent; width: 460
+            // 500, not the other gates' 460: the two buttons hug labels long
+            // enough that the pair outgrew a 420 column and ate the padding.
+            anchors.centerIn: parent; width: 500
             implicitHeight: fnCol.implicitHeight + 40
             radius: 14; color: root.surface2; border.color: root.outline
             MouseArea { anchors.fill: parent }   // a click on the card must not dismiss
@@ -18003,9 +18001,9 @@ ApplicationWindow {
                     onLinkActivated: function(link) { waves.revealDownloadPath() }
                 }
                 RowLayout {
-                    Layout.fillWidth: true; Layout.topMargin: 4; spacing: 12
-                    GateAction { showArrow: false; label: "Choose a new location"; onClicked: { root.folderNudge = false; waves.dismissDownloadFolderNudge(); root.openDownloadSetting() } }
-                    GateAction { showArrow: false; neutral: true; label: "Keep the default location"; onClicked: { root.folderNudge = false; waves.keepDownloadFolder() } }
+                    Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 4; spacing: 12
+                    SpecBtn { primary: true; label: "CHOOSE A NEW LOCATION"; onClicked: { root.folderNudge = false; waves.dismissDownloadFolderNudge(); root.openDownloadSetting() } }
+                    SpecBtn { label: "KEEP THE DEFAULT LOCATION"; onClicked: { root.folderNudge = false; waves.keepDownloadFolder() } }
                 }
             }
         }
@@ -18077,9 +18075,9 @@ ApplicationWindow {
                     }
                 }
                 RowLayout {
-                    Layout.fillWidth: true; Layout.topMargin: 4; spacing: 12
-                    GateAction {
-                        showArrow: false; label: "Download all"
+                    Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 4; spacing: 12
+                    SpecBtn {
+                        primary: true; label: "DOWNLOAD ALL"
                         onClicked: {
                             var p = root.catDlPrompt
                             var mute = cdSkip.checked
@@ -18095,7 +18093,7 @@ ApplicationWindow {
                             else waves.downloadPlaylistCategory(p.path)
                         }
                     }
-                    GateAction { showArrow: false; neutral: true; label: "Cancel"; onClicked: root.catDlDismiss() }
+                    SpecBtn { label: "CANCEL"; onClicked: root.catDlDismiss() }
                 }
             }
         }
@@ -18125,16 +18123,74 @@ ApplicationWindow {
                     text: "Every option in Settings goes back to its factory value, including your download folder and quality choices. You stay signed in, and your downloaded music is not touched."
                 }
                 RowLayout {
-                    Layout.fillWidth: true; Layout.topMargin: 4; spacing: 12
-                    GateAction {
-                        showArrow: false; label: "Reset settings"
+                    Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 4; spacing: 12
+                    SpecBtn {
+                        primary: true; label: "RESET SETTINGS"
                         onClicked: {
                             root.confirmSettingsReset = false
                             waves.resetSettingsDefaults()
                             settingsPage.externalReset()
                         }
                     }
-                    GateAction { showArrow: false; neutral: true; label: "Cancel"; onClicked: root.confirmSettingsReset = false }
+                    SpecBtn { label: "CANCEL"; onClicked: root.confirmSettingsReset = false }
+                }
+            }
+        }
+    }
+
+    // FLAC signature fix (Advanced settings). Confirms with the file count and
+    // says exactly what is written: the 34-byte header block of each file the
+    // scan found without a signature, and nothing else. The same gate asks to
+    // resume a fix that stopped before it finished (flacFixResume): the count
+    // is not known until the backend has scanned the folders again.
+    Rectangle {
+        id: flacFixGate
+        objectName: "flacFixGate"
+        anchors.fill: parent
+        visible: root.confirmFlacFix
+        color: "#cc06070e"
+        MouseArea { anchors.fill: parent; onClicked: root.confirmFlacFix = false }   // click-away cancels
+        Rectangle {
+            anchors.centerIn: parent; width: 460
+            implicitHeight: flacFixCol.implicitHeight + 40
+            radius: 14; color: root.surface2; border.color: root.outline
+            MouseArea { anchors.fill: parent }   // a click on the card must not dismiss
+            ColumnLayout {
+                id: flacFixCol; anchors.centerIn: parent; width: parent.width - 40; spacing: 14
+                Text {
+                    textFormat: Text.PlainText; Layout.fillWidth: true; color: root.textHi; font.pixelSize: 18; font.bold: true; wrapMode: Text.WordWrap
+                    text: root.flacFixResume ? "Resume the last fix?"
+                        : "Write the signature into " + root.flacFixCount + (root.flacFixCount === 1 ? " file?" : " files?")
+                }
+                Text {
+                    visible: root.flacFixWhere !== ""
+                    textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; maximumLineCount: 3; elide: Text.ElideRight
+                    color: root.textHi; font.family: root.mono; font.pixelSize: 12
+                    text: root.flacFixWhere
+                }
+                Text {
+                    visible: root.flacFixResume
+                    textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    color: root.textLo; font.pixelSize: 13; lineHeight: 1.3
+                    text: "The last fix stopped before it finished. Waves scans these folders again and writes the signature into the files it did not reach. The files it already signed are skipped."
+                }
+                Text {
+                    textFormat: Text.PlainText; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    color: root.textLo; font.pixelSize: 13; lineHeight: 1.3
+                    text: "Each file is decoded and checked again first, then its 34-byte FLAC header block is updated in place. The audio is never changed, no file is moved, renamed or deleted, and a file that already carries a signature is never rewritten. A report of every file is saved when it finishes."
+                }
+                // The same buttons as the other Settings confirmations (the resets).
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 4; spacing: 12
+                    SpecBtn {
+                        primary: true; label: root.flacFixResume ? "RESUME" : "WRITE SIGNATURES"
+                        onClicked: {
+                            root.confirmFlacFix = false
+                            if (root.flacFixResume) waves.flacCheckResume()
+                            else waves.flacCheckFix()
+                        }
+                    }
+                    SpecBtn { label: "CANCEL"; onClicked: root.confirmFlacFix = false }
                 }
             }
         }
@@ -18164,16 +18220,16 @@ ApplicationWindow {
                     text: "This signs you out and permanently erases everything Waves has saved on this computer: all settings, the record of which tracks you own, caches and logs. Your downloaded music files are not touched. Waves closes when it finishes, and the next launch starts like a brand-new install."
                 }
                 RowLayout {
-                    Layout.fillWidth: true; Layout.topMargin: 4; spacing: 12
-                    GateAction {
-                        showArrow: false; danger: true; label: "Erase everything and close"
+                    Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 4; spacing: 12
+                    SpecBtn {
+                        danger: true; label: "ERASE EVERYTHING AND CLOSE"
                         onClicked: {
                             root.confirmFactoryReset = false
                             waves.factoryReset()
                             Qt.quit()
                         }
                     }
-                    GateAction { showArrow: false; neutral: true; label: "Cancel"; onClicked: root.confirmFactoryReset = false }
+                    SpecBtn { label: "CANCEL"; onClicked: root.confirmFactoryReset = false }
                 }
             }
         }
@@ -18214,9 +18270,9 @@ ApplicationWindow {
                     text: "The folder is set, but writing to it failed just now. If it lives on a network drive or NAS, it may have disconnected while the computer slept. Reconnect it, or choose a different folder. The download is held: Waves keeps checking and resumes on its own the moment the folder is back."
                 }
                 RowLayout {
-                    Layout.fillWidth: true; Layout.topMargin: 4; spacing: 12
-                    GateAction { showArrow: false; label: "Try again"; onClicked: { root.folderUnreachable = false; waves.retryDownloadFolder() } }
-                    GateAction { showArrow: false; neutral: true; label: "Choose a new location"; onClicked: { root.folderUnreachable = false; waves.dismissDownloadFolderNudge(); root.openDownloadSetting() } }
+                    Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 4; spacing: 12
+                    SpecBtn { primary: true; label: "TRY AGAIN"; onClicked: { root.folderUnreachable = false; waves.retryDownloadFolder() } }
+                    SpecBtn { label: "CHOOSE A NEW LOCATION"; onClicked: { root.folderUnreachable = false; waves.dismissDownloadFolderNudge(); root.openDownloadSetting() } }
                 }
             }
         }
@@ -18376,14 +18432,16 @@ ApplicationWindow {
                 }
 
                 // Cancel (while installing)
-                GateAction {
+                SpecBtn {
+                    Layout.alignment: Qt.AlignHCenter
                     visible: appFfmpeg.busy
                     label: "CANCEL"; danger: true
                     onClicked: appFfmpeg.cancel()
                 }
 
                 // Managed: continue past the gate.
-                GateAction {
+                SpecBtn {
+                    Layout.alignment: Qt.AlignHCenter; primary: true
                     visible: appFfmpeg.stateKey === "managed" && !appFfmpeg.busy
                     label: "CONTINUE"
                     onClicked: { setupSettings.ffmpegSetupDone = true; ffmpegGate.sessionSnoozed = true }
@@ -18679,9 +18737,9 @@ ApplicationWindow {
                     text: "FFmpeg isn't set up, so files would save degraded: FLAC stays wrapped in its stream container, videos aren't converted, and track lengths aren't repaired (strict players can show 0:00). Set it up in Settings with one click, then start the download again, or continue anyway with these limitations."
                 }
                 RowLayout {
-                    Layout.fillWidth: true; Layout.topMargin: 4; spacing: 12
-                    GateAction { showArrow: false; label: "Set up FFmpeg"; onClicked: { root.ffmpegBlocked = false; waves.dismissDownloadFolderNudge(); root.openFfmpegSetting() } }
-                    GateAction { showArrow: false; neutral: true; label: "Continue anyway"; onClicked: { root.ffmpegBlocked = false; waves.bypassFfmpegGate() } }
+                    Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 4; spacing: 12
+                    SpecBtn { primary: true; label: "SET UP FFMPEG"; onClicked: { root.ffmpegBlocked = false; waves.dismissDownloadFolderNudge(); root.openFfmpegSetting() } }
+                    SpecBtn { label: "CONTINUE ANYWAY"; onClicked: { root.ffmpegBlocked = false; waves.bypassFfmpegGate() } }
                 }
             }
         }
@@ -18814,7 +18872,8 @@ ApplicationWindow {
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ackChk.checked = !ackChk.checked }
                     }
                 }
-                GateAction {
+                SpecBtn {
+                    Layout.alignment: Qt.AlignHCenter; primary: true
                     label: "ACKNOWLEDGE & AGREE"
                     enabled: ackChk.checked
                     opacity: ackChk.checked ? 1 : 0.4
@@ -18826,7 +18885,10 @@ ApplicationWindow {
                         // whose stored version is older.
                         // A terms-revision re-accept is not a first run: only
                         // the first acceptance ever marks the update prompt fresh.
-                        if (!legalSettings.termsAccepted) setupSettings.updatePromptFresh = true
+                        if (!legalSettings.termsAccepted) {
+                            setupSettings.updatePromptFresh = true
+                            setupSettings.flacNoticeSeen = true
+                        }
                         legalSettings.termsAcceptedVersion = root.termsVersion
                         legalSettings.termsAcceptedDate = new Date().toISOString().slice(0, 10)
                         legalSettings.termsAccepted = true
@@ -19087,6 +19149,88 @@ ApplicationWindow {
                     Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 4; spacing: 12
                     SpecBtn { primary: true; label: "TURN ON UPDATE CHECKS"; onClicked: updateOptInGate.answer(true) }
                     SpecBtn { label: "NOT NOW"; onClicked: updateOptInGate.answer(false) }
+                }
+            }
+        }
+    }
+
+    // FLAC signature notice: once per install, after updating from a version
+    // that could save FLAC files without their audio signature (the gap came
+    // from tidal-dl-ng). It waits for Browse with every first-run prompt
+    // gone, and any answer, a click-away included, retires it for good
+    // (setupSettings.flacNoticeSeen).
+    Rectangle {
+        id: flacNoticeGate
+        objectName: "flacNoticeGate"
+        parent: Overlay.overlay
+        anchors.fill: parent
+        z: 1200
+        // Every first-run step and the update prompt are out of the way. Read
+        // from their eligibility, never their visible: the update prompt's
+        // visible trails its own fade-in, so in the tick both become due it
+        // still reads false and this card would land on top of it.
+        readonly property bool promptsClear: root.signedIn && setupSettings.ffmpegSetupDone && root.termsCurrentAccepted
+            && bootOverlay.done
+            && !ffmpegGate.wanted
+            && !updateOptInGate.shouldShow
+        readonly property bool shouldShow: promptsClear
+            && !setupSettings.flacNoticeSeen
+            && root.browseOpen && !root.settingsOpen && !root.artistOpen && !root.libraryOpen
+        // Latched: once up it stays until answered, whatever moves behind it.
+        // Taken a beat later and re-read then: one flip (signedIn, say) can
+        // reach this binding before the update prompt's, and the transient
+        // true it reads in between must not latch.
+        property bool shown: false
+        function latch() { if (shouldShow) shown = true }
+        onShouldShowChanged: if (shouldShow) Qt.callLater(latch)
+        Component.onCompleted: Qt.callLater(latch)
+        // Never stacked: a prompt that comes due while this is up (an FFmpeg
+        // re-prompt, then the update prompt) takes the frame first, and this
+        // returns once that one has faded all the way out.
+        readonly property bool onTop: shown && promptsClear && !updateOptInGate.visible
+        // Only while on top: through its fade-out, as it steps aside for
+        // another prompt, a stray click must not retire a notice never read.
+        function answer(toFix) {
+            if (!onTop) return
+            setupSettings.flacNoticeSeen = true
+            shown = false
+            if (toFix) root.openFlacSetting()
+        }
+        visible: opacity > 0
+        opacity: onTop ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 520; easing.type: Easing.OutCubic } }
+        color: "#cc06070e"
+        MouseArea { anchors.fill: parent; enabled: flacNoticeGate.onTop; onClicked: flacNoticeGate.answer(false) }
+        Rectangle {
+            anchors.centerIn: parent; width: 500
+            implicitHeight: fnoCol.implicitHeight + 40
+            radius: 14; color: root.surface2; border.color: root.outline
+            anchors.verticalCenterOffset: flacNoticeGate.onTop ? 0 : flacNoticeGate.height / 2 + height
+            Behavior on anchors.verticalCenterOffset {
+                NumberAnimation { duration: 520; easing.type: Easing.OutCubic }
+            }
+            MouseArea { anchors.fill: parent }   // a click on the card must not dismiss
+            ColumnLayout {
+                id: fnoCol; anchors.centerIn: parent; width: parent.width - 40; spacing: 14
+                Text {
+                    textFormat: Text.PlainText; Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    color: root.textHi; font.pixelSize: 18; font.bold: true; wrapMode: Text.WordWrap
+                    text: "FLAC files from earlier versions"
+                }
+                // StyledText for the one bold phrase, lit in textHi: a string
+                // literal plus a palette colour, no remote data. The phrase is
+                // the point: the music is fine and the fix is optional.
+                Text { // guard:deliberate-richtext flac-notice-body
+                    textFormat: Text.StyledText; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    color: root.textLo; font.pixelSize: 13; lineHeight: 1.3
+                    text: "Some FLAC files saved by earlier versions of Waves (and by tidal-dl-ng, which Waves grew from) are missing their audio signature. <b><font color=\"" + root.textHi + "\">The music in them is intact and plays normally</font></b>, but strict tools like flac -t or Music Assistant may flag them. Waves now adds the signature to everything it saves, and a new check in Settings can find and fix older files for you in a few clicks, without touching the audio. <b><font color=\"" + root.textHi + "\">Fixing them is optional.</font></b>"
+                }
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter; Layout.topMargin: 4; spacing: 12
+                    SpecBtn { primary: true; label: "TAKE ME TO THE FIX"; onClicked: flacNoticeGate.answer(true) }
+                    SpecBtn { label: "GOT IT"; onClicked: flacNoticeGate.answer(false) }
                 }
             }
         }
