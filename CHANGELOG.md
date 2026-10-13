@@ -22,6 +22,23 @@ A bullet that closes a reported issue names it in full and links to it:
 package managers), where a bare number is neither a link nor obviously an
 issue. A test enforces it.
 
+## 🗂️ v0.1.35 (2026-10-12)
+
+### ✨ Added
+
+- 🎼 Advanced settings has a FLAC signatures check: Scan reads every FLAC header in your Waves library or in a custom location chosen with Browse (switch on Deep check to also decode the audio and find damage) and saves a CSV report of all files (View reports opens them at any time), and Fix writes the missing audio signature into the files that have none (34 header bytes each, after decoding and checking the audio), so they pass `flac -t` and strict players again. The audio is never changed, and a file that already carries a signature is never rewritten. Scans read several files at once, which makes them much faster on a network share, and a later scan reads only the files that changed since an earlier one (switch on Recheck all to read every file again). Long runs show a progress bar with the time left, and a fix that stops part way (the app closed or crashed) resumes where it left off. After updating, a one-time notice on Browse explains which files are affected and opens the check.
+- 🐧 The Linux AppImage now carries AppStream metadata, so software centers and the AppImage catalog show real screenshots and a description of the signed-in app instead of the first-run sign-in screen.
+
+### 🔧 Changed
+
+- 🪟 Pop-up buttons are sized to their labels like every other button in the app, instead of stretching across the dialog.
+
+### 🐛 Fixed
+
+- 🎼 Every extracted FLAC file is now checked against its audio MD5 signature after download; a file that arrived without one gets it computed and written, so `flac -t` and strict players (Music Assistant and others) no longer report it as corrupt.
+- 🎚️ Downsampling works again with the FFmpeg builds Waves installs: they have no soxr resampler, and every downsample failed the track with "Error reinitializing filters"; FFmpeg's built-in resampler now takes over when soxr is missing.
+- ⏭️ With Skip existing turned off, every track downloads again, including songs Waves already downloaded into another folder, so a playlist saved to a new folder gets all of its songs ([issue #53](https://github.com/iamprivacy/Waves/issues/53)).
+
 ## 🗂️ v0.1.34 (2026-10-07)
 
 ### ✨ Added
