@@ -110,6 +110,7 @@ from waves.worker import Worker
 
 from . import __version__ as _WAVES_VERSION
 from . import devlog, diagnostics, netmount
+from .bridge_flac import REPORTS_DIR, FlacCheckMixin
 from .bridge_library import (
     _LIBRARY_DEEP_SWEEP_MS,
     _LIBRARY_DL_DEBOUNCE_MS,
@@ -526,6 +527,10 @@ class _SingleFlightWriter:
                 logger.exception("Config write during shutdown flush failed")
 
 
+# How long a factory reset waits for a running FLAC scan to close its
+# remembered verdicts (it stops after the file it is on).
+_FLAC_CACHE_RELEASE_WAIT_S = 5.0
+
 _FACTORY_WIPE_FILES = (
     "settings.json",
     "settings.json.bak",
@@ -559,6 +564,14 @@ _FACTORY_WIPE_FILES = (
     "mbarbiter.sqlite3",
     "mbarbiter.sqlite3-wal",
     "mbarbiter.sqlite3-shm",
+    # The FLAC check's remembered verdicts (flac_verify.VerdictCache): a path
+    # per file it ever scanned. Opened only for the length of a scan, never
+    # once a reset began; the reset waits for a running scan to close it
+    # (bridge_flac._flac_check_open_cache, _FLAC_CACHE_RELEASE_WAIT_S).
+    "flac-check.sqlite3",
+    "flac-check.sqlite3-journal",
+    "flac-check.sqlite3-wal",
+    "flac-check.sqlite3-shm",
     "app.log",
     "crash.log",
     "waves_dev.log",
@@ -648,6 +661,10 @@ _FACTORY_WIPE_SUBDIRS = (
     # named by its byte size and staged through a uuid tmp sibling, both parts
     # Waves writes, so both patterns stay anchored end to end.
     (_MOTION_CACHE_DIR, (), _MOTION_CACHE_NAMES),
+    # The FLAC check's CSV reports (bridge_flac): named by kind and time
+    # stamp, plus a counter for a second report in the same second, all parts
+    # Waves writes, anchored end to end.
+    (REPORTS_DIR, (), (re.compile(r"flac-check-(scan|fix)-\d{8}-\d{6}(-[2-9]|-[1-9]\d{1,2})?\.csv\Z"),)),
 )
 
 
@@ -1859,9 +1876,19 @@ class _TrackedDownload(Download):
         the ownership ledger) or "claim" (the library scan's tag match), and
         ``tier`` (its quality word, "" when unknown). The ledger row states
         both, so IN LIBRARY keeps its quality column and speaks in the same
-        two voices as the download button (green fact, gold guess)."""
+        two voices as the download button (green fact, gold guess).
+
+        With "Skip existing" off nothing gates at all: the job downloads every
+        item, whatever the ownership ledger or the library scan says you hold
+        elsewhere, and the engine replaces a same-named file at the
+        destination as that setting already means (issue #53: a playlist
+        downloaded into a new folder lost every track an album download had
+        already fetched). That covers merge members and videos too. The base
+        value is read, not the per-thread upgrade override."""
         if self._force_redownload:
             return "force", {}
+        if not self._skip_existing_base:
+            return None, {}
         verdict, rec = self._ownership_decision(media, file_template, placement)
         if verdict == "skip":
             return "skip", {
@@ -3667,7 +3694,7 @@ def _record_in_library(bridge, path: str) -> bool:
         return False
 
 
-class WavesBridge(LibraryMixin, QObject):
+class WavesBridge(LibraryMixin, FlacCheckMixin, QObject):
     """The single object exposed to QML as the ``waves`` context property.
 
     State model at a glance (each field is documented where it is created in
@@ -4660,6 +4687,8 @@ class WavesBridge(LibraryMixin, QObject):
         self._libraryPollDone.connect(self._on_library_poll_done)
         self._downloadRecorded.connect(self._on_download_recorded)
         self._revealResolved.connect(self._on_reveal_resolved)
+        # The FLAC signature check (Settings, Advanced): see bridge_flac.
+        self._flac_check_init()
         self._library_dl_debounce = QtCore.QTimer(self)
         self._library_dl_debounce.setSingleShot(True)
         self._library_dl_debounce.setInterval(_LIBRARY_DL_DEBOUNCE_MS)
@@ -9167,6 +9196,24 @@ class WavesBridge(LibraryMixin, QObject):
         queue claims nothing."""
         return bool((self._queue_item(qid) or {}).get("askLibrarySkip"))
 
+    def _job_skip_existing(self, qid: int) -> bool:
+        """Whether this queue row's job skips what you already have ("Skip
+        existing"), as pinned when the row was created. Held for the row's
+        whole life like askLibrarySkip, and for the same reason: the run's
+        gate and the expanded row's prediction both read it, so flipping the
+        setting while a long queue works through cannot make the drawer
+        promise IN LIBRARY for tracks the run downloads anyway. A row from
+        before the field reads the setting."""
+        row = self._queue_item(qid) or {}
+        if "askSkipExisting" in row:
+            return bool(row.get("askSkipExisting"))
+        return self._skip_existing_on()
+
+    def _skip_existing_on(self) -> bool:
+        """The live "Skip existing" setting: what a row pins when it is
+        created, and what a row from before the pin answers with."""
+        return bool(self.settings.data.skip_existing)
+
     def _target_tier(self) -> str:
         """The tier the audio-quality setting asks for, as the UI's one word.
         Best-effort: an unreadable setting means the row states no target
@@ -9238,6 +9285,9 @@ class WavesBridge(LibraryMixin, QObject):
             # flipped while a long queue works through it would otherwise move
             # one of them and not the other. See _job_library_skip.
             "askLibrarySkip": self._library_bulk_skip_on(),
+            # "Skip existing", pinned the same way: off means the job fetches
+            # every track, and the prediction must agree. See _job_skip_existing.
+            "askSkipExisting": self._skip_existing_on(),
             # The catalog's advertised ceiling for this release ("" when it has
             # none: playlists and mixes have no tier of their own). The drawer
             # states the LOWER of this and the request, so a lossless-only
@@ -10268,10 +10318,15 @@ class WavesBridge(LibraryMixin, QObject):
         identity ids and may only be skipped when the owned copy sits in that
         job's own destination folder, which is a question this cannot answer
         from a track list.
+
+        A row queued with "Skip existing" off predicts nothing either: its
+        run skips nothing (see _job_skip_existing).
         """
         marks: dict[str, dict] = {}
         media_id = str(item.get("media_id", "") or "")
         if media_id in self._redownload_overrides or media_id in self._merge_plans:
+            return marks
+        if not self._job_skip_existing(qid):
             return marks
         target = self._target_quality_rank(self._job_quality(qid))
         atmos_on = self._job_atmos(qid)
@@ -10576,6 +10631,18 @@ class WavesBridge(LibraryMixin, QObject):
             # terms to musicbrainz.org, and no-data-by-default is the
             # promise). Inert while library_enabled is off.
             "library_mb_arbiter": False,
+            # The FLAC signatures card (Settings, Advanced): what a scan walks.
+            # "waves" is the Waves library (the download folder plus the
+            # library folder when the library scan is on); "folder" is the one
+            # folder in flac_check_folder, set only from the card's Browse
+            # dialog. Written straight away by the card (bridge_flac).
+            "flac_check_source": "waves",
+            "flac_check_folder": "",
+            # The scope key of a fix that has not finished ("" = none): set
+            # when one starts, cleared when it finishes, so a quit or a crash
+            # part way leaves RESUME on the card. Housekeeping, not in
+            # settingsSchema.
+            "flac_check_resume": "",
             # Updates: opt-in, off by default (preserves the no-phone-home-by-
             # default promise). update_last_check is housekeeping state, not a
             # user-facing setting, so it isn't in settingsSchema.
@@ -11535,8 +11602,11 @@ class WavesBridge(LibraryMixin, QObject):
         force_redownload: bool = False,
         pinned_quality=None,
         atmos_on: bool | None = None,
+        skip_existing: bool | None = None,
     ) -> Download:
         self._resolve_ffmpeg()
+        if skip_existing is None:
+            skip_existing = self.settings.data.skip_existing
         progress_gui = ProgressBars(
             item=signals.item,
             item_name=signals.item_name,
@@ -11547,7 +11617,7 @@ class WavesBridge(LibraryMixin, QObject):
             tidal_obj=self.tidal,
             path_base=self.settings.data.download_base_path,
             fn_logger=logger,
-            skip_existing=self.settings.data.skip_existing,
+            skip_existing=skip_existing,
             progress=Progress(),
             progress_gui=progress_gui,
             event_abort=event_abort or self._event_abort,
@@ -12538,6 +12608,7 @@ class WavesBridge(LibraryMixin, QObject):
             force_redownload=media_id in self._redownload_overrides,
             pinned_quality=self._job_quality(qid),
             atmos_on=self._job_atmos(qid),
+            skip_existing=self._job_skip_existing(qid),
         )
         if collection or merge_plan is not None:
             self._job_tracks.setdefault(qid, {})
@@ -15777,6 +15848,10 @@ class WavesBridge(LibraryMixin, QObject):
         # writes a fabricated freeze into crash.log on every quit mid-download.
         with contextlib.suppress(Exception):
             diagnostics.stop_freeze_watchdog()
+        # A running FLAC check unwinds after the file it is on (a header write
+        # is one call, so nothing is left half-done).
+        with contextlib.suppress(Exception):
+            self._flac_check_cancel.set()
         # Flush the background config writer FIRST: a pref set moments before
         # quit is still queued there, and everything below may take seconds.
         with contextlib.suppress(Exception):
@@ -17703,6 +17778,18 @@ class WavesBridge(LibraryMixin, QObject):
         # between the wipe and the quit. getattr: partial test stubs drive this
         # slot without the library family.
         self._library_gen = getattr(self, "_library_gen", 0) + 1  # discard any in-flight scan's publish
+        # A running FLAC check stops after the file it is on, and its outcome
+        # (a CSV naming every file it saw) is dropped rather than written back
+        # into the folder wiped below (see bridge_flac._flac_check_finish).
+        self._flac_check_gen = getattr(self, "_flac_check_gen", 0) + 1
+        with contextlib.suppress(Exception):
+            self._flac_check_cancel.set()
+        # The scan holds its remembered verdicts open on a worker; it stops
+        # after the file it is on and closes them, and Windows deletes no
+        # open file. A share that stopped answering cannot hold the reset up
+        # past the wait: the scan then deletes the file itself once it closes.
+        with contextlib.suppress(Exception):
+            self._flac_check_cache_event().wait(_FLAC_CACHE_RELEASE_WAIT_S)
         with contextlib.suppress(Exception):
             self._library.close()
         with contextlib.suppress(Exception):

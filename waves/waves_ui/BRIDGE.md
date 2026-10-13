@@ -217,6 +217,69 @@ non-track kinds resolve to a concrete song, reported via `previewMeta`'s
 `trackId`, which is how every surface showing that song displays live
 state instead of offering a restart (see `pvActive` in Main.qml).
 
+## FLAC signature check (Settings, Advanced)
+
+The family lives in `bridge_flac.py` (`FlacCheckMixin`, mixed into
+`WavesBridge`); `waves/flac_verify.py` does the work. It walks the folders
+the card selects: the Waves library (the download folder, and the library
+folder when the library scan is on and configured), or one folder the user
+picked with Browse. The choice is remembered in the `flac_check_source` and
+`flac_check_folder` prefs. It reads every FLAC header there and can fill in a
+missing audio signature. The scan reads only; the fix writes exactly the
+34-byte STREAMINFO block of a file whose signature was unset, after decoding
+it cleanly to the length its header states, and never a file that already
+carries one (a cut-off or damaged file is reported and left alone). A fix
+acts only while the selection still names the folders the last scan walked;
+otherwise it fails visibly ("The folders changed since the scan") so the card
+never offers a fix that does nothing. A header that gives no sample count is
+signed only when the file's last frame proves where the audio ends (a short
+final frame of a fixed-blocksize stream); a file that could have been cut on
+a frame boundary is reported and left alone. Every run writes a CSV report
+under the config folder's `reports/` (`flac-check-<scan|fix>-YYYYMMDD-HHMMSS.csv`,
+with `-2`, `-3` and so on for another report in the same second, so no report
+replaces another), except a run cut short by a factory reset, whose outcome
+is dropped so nothing lands in the wiped folder. Each decode runs under a
+watchdog that stops ffmpeg on Cancel or past a time limit scaled to the
+file's size, so a share that stopped answering cannot hold the run.
+
+A folder that cannot be opened or listed (a share not mounted, a drive
+unplugged, a folder the system will not let Waves read) is never taken for
+an empty one. When none of the selected folders opens, the scan fails ("The
+chosen folder could not be opened.", or "The Waves library folder(s) could
+not be opened."); otherwise it finishes over what it could read, and
+`folders_unreadable` in the state counts the folders it could not (the
+report lists them as `folder_unreadable` lines). A link to a FLAC file the
+walk already found is checked once, under the file's own name.
+
+A fix that stops part way leaves the `flac_check_resume` pref set to its
+scope key; RESUME (`flacCheckResume()`, through Main.qml's confirmation)
+scans those folders again and fixes what is left. The marker is cleared by a
+fix that finishes, or by a scan of the same folders that finds nothing left
+to fix, but never while the run could not read a folder the unfinished fix
+could have written in: what it left there was never looked at. A folder the
+scan behind that fix could not read either (a drive root's `lost+found`)
+does not hold the marker; when that scan is from before this launch, only a
+selected folder that cannot be opened does.
+
+| Signal             | Fires when                                                                                   |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| `flacCheckChanged` | A scan or fix started, progressed or finished; the Settings card re-reads `flacCheckState()` |
+
+Slots: `flacCheckState()` (the state dict: phase, counts per status, the fixable
+count, the report path, the scope the last scan walked, `folders_unreadable`,
+`cached`, `resume_source` / `resume_folders` for RESUME, and `reports`: whether any
+report is on disk), `flacCheckSources()`
+(the selected source, the chosen folder, the scope key the selection names,
+the Waves library folders), `flacCheckSetSource(source)` ("waves" or
+"folder"), `flacCheckSetFolder(path)` (an absolute path from the card's folder
+dialog; selects it), `flacCheckScan(deep, recheck)` (header scan, or decode every file
+too; `recheck` reads files an earlier scan already judged), `flacCheckFix()`
+and `flacCheckResume()` (called by Main.qml's confirmation gate only, never by
+the card), `flacCheckCancel()`, `flacCheckRevealReports()` (the reports folder
+in the file manager, with the newest report selected on macOS, also during a
+run). One run at a time; any
+other slot called during a run is a no-op.
+
 ## FFmpeg manager and self-updater
 
 | Signal                                                                                                              | Fires when                                                      |
@@ -227,7 +290,8 @@ state instead of offering a restart (see `pvActive` in Main.qml).
 ## Internal signals (thread hops)
 
 Signals prefixed `_` are not for QML; they marshal work back onto the GUI
-thread: `_albumsQueued` (batch-enqueue a resolved discography),
+thread: `_flacCheckEvent` (a FLAC check worker's progress and outcome),
+`_albumsQueued` (batch-enqueue a resolved discography),
 `_tracksQueued` (same batch marshalling for individual tracks),
 `_mediaRefetched` (re-dispatch a download whose object was evicted from the
 cache), `_queueTracksFetched` (merge a track snapshot without racing live
